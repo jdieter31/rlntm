@@ -13,7 +13,7 @@ class HDTransformerEncoderLayer(Module):
 
         self.layers = torch.nn.ModuleList([TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation) for _ in range(n_dims)])
 
-    def forward(self, src: Tensor, src_mask: Optional[List[Tensor]] = None, src_key_padding_mask: Optional[List[Tensor]] = None) -> Tensor:
+    def forward(self, src: Tensor, src_mask: Optional[List[Tensor]] = None, src_key_padding_mask: Tensor = None) -> Tensor:
         r"""Pass the input through the encoder layer.
 
         Args:
@@ -24,16 +24,19 @@ class HDTransformerEncoderLayer(Module):
         Shape:
             src: (N, d_1, ..., d_n, E)
             src_masks: (d_1, d_1), ..., (d_n, d_n)
-            src_key_padding_mask: (N, d_1), ..., (N, d_n)
+            src_key_padding_mask: (N, d_1, ..., d_n)
         """
         if src_mask is None:
-            src_mask = [_ for _ in range(len(list(src.size()[1:-1])))]
-        if src_key_padding_mask is None:
-            src_key_padding_mask = [_ for _ in range(len(list(src.size()[1:-1])))]
+            src_mask = [None for _ in range(len(list(src.size()[1:-1])))]
 
         for i in range(len(self.layers)):
             reshaped_src = src.transpose(-2, - 2 - i)
-            x = self.layers[i](reshaped_src.reshape(-1, src.size(-2 - i), src.size(-1)))
+            msk = src_mask[i]
+            keypmask = None
+            if src_key_padding_mask is not None:
+                keypmask = src_key_padding_mask.transpose(- 1, - 1 - i).reshape(-1, src_key_padding_mask.size(- 1 - i))
+
+            x = self.layers[i](reshaped_src.reshape(-1, src.size(-2 - i), src.size(-1)).transpose(0, 1), src_mask=msk, src_key_padding_mask=keypmask).transpose(0,1)
             x = x.view(*reshaped_src.size())
             src = x.transpose(-2, - 2 - i)
 

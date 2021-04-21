@@ -14,11 +14,16 @@ import torch.optim
 import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
+import torchvision
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import math
 import torchvision.models as models
 from rlntm.modules.vision_transformer import VisionTransformer
+from collections.abc import Sequence
+import wandb
+
+wandb.init(project="trntm")
 
 models.__dict__["vision_transformer"] = VisionTransformer
 
@@ -174,9 +179,7 @@ def main_worker(gpu, ngpus_per_node, args):
     # define loss function (criterion) and optimizer
     criterion = nn.CrossEntropyLoss().cuda(args.gpu)
 
-    optimizer = torch.optim.Adam(model.parameters(), args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+    optimizer = torch.optim.Adam(model.parameters(), args.lr)
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -208,10 +211,61 @@ def main_worker(gpu, ngpus_per_node, args):
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
 
+    class Resize(torch.nn.Module):
+        """Resize the input image to the given size.
+        If the image is torch Tensor, it is expected
+        to have [..., H, W] shape, where ... means an arbitrary number of leading dimensions
+
+        Args:
+            size (sequence or int): Desired output size. If size is a sequence like
+                (h, w), output size will be matched to this. If size is an int,
+                smaller edge of the image will be matched to this number.
+                i.e, if height > width, then image will be rescaled to
+                (size * height / width, size).
+                In torchscript mode size as single int is not supported, use a sequence of length 1: ``[size, ]``.
+            interpolation (InterpolationMode): Desired interpolation enum defined by
+                :class:`torchvision.transforms.InterpolationMode`. Default is ``InterpolationMode.BILINEAR``.
+                If input is Tensor, only ``InterpolationMode.NEAREST``, ``InterpolationMode.BILINEAR`` and
+                ``InterpolationMode.BICUBIC`` are supported.
+                For backward compatibility integer values (e.g. ``PIL.Image.NEAREST``) are still acceptable.
+
+        """
+
+        def __init__(self, size, interpolation=torchvision.transforms.functional.InterpolationMode.BILINEAR):
+            super().__init__()
+            if not isinstance(size, (int, Sequence)):
+                raise TypeError("Size should be int or sequence. Got {}".format(type(size)))
+            if isinstance(size, Sequence) and len(size) not in (1, 2):
+                raise ValueError("If size is a sequence, it should have 1 or 2 values")
+            self.size = size
+
+            self.interpolation = interpolation
+
+        def forward(self, img):
+            """
+            Args:
+                img (PIL Image or Tensor): Image to be scaled.
+
+            Returns:
+                PIL Image or Tensor: Rescaled image.
+            """
+            if max(img.size) < self.size:
+                return img
+            size_0 = (img.size[0] * self.size) // max(img.size)
+            size_1 = (img.size[1] * self.size) // max(img.size)
+
+
+            return torchvision.transforms.functional.resize(img, [size_0, size_1], self.interpolation)
+
+
+        def __repr__(self):
+            interpolate_str = self.interpolation.value
+            return self.__class__.__name__ + '(size={0}, interpolation={1})'.format(self.size, interpolate_str)
+
     train_dataset = datasets.ImageFolder(
         traindir,
         transforms.Compose([
-            #transforms.RandomResizedCrop(224),
+            Resize(512),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize,
@@ -239,10 +293,11 @@ def main_worker(gpu, ngpus_per_node, args):
 
         image_collate = torch.zeros(len(batch), image[0].size(0), max_height, max_width)
         mask = torch.zeros(len(batch), max_height // chunk_dim, max_width // chunk_dim, dtype=torch.bool)
+        mask[:, :, :] = True
 
         for i, image in enumerate(batch):
             image_collate[i, :, :image[0].size(1), :image[0].size(2)] = image[0]
-            mask[i, max_height // chunk_dim - math.ceil(image[0].size(1) / chunk_dim):, max_width // chunk_dim - math.ceil(image[0].size(2) / chunk_dim):] = True
+            mask[i, : math.ceil(image[0].size(1) / chunk_dim), : math.ceil(image[0].size(2) / chunk_dim)] = False
 
         targets = torch.LongTensor(targets)
         return image_collate, mask, targets
@@ -253,13 +308,13 @@ def main_worker(gpu, ngpus_per_node, args):
 
     val_loader = torch.utils.data.DataLoader(
         datasets.ImageFolder(valdir, transforms.Compose([
-            #transforms.Resize(256),
+            Resize(512),
             #transforms.CenterCrop(224),
             transforms.ToTensor(),
             normalize,
         ])),
         batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
+        num_workers=args.workers, pin_memory=True, collate_fn=collate_fn)
 
     if args.evaluate:
         validate(val_loader, model, criterion, args)
@@ -309,6 +364,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     for i, (images, masks, target) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         if args.gpu is not None:
             images = images.cuda(args.gpu, non_blocking=True)
@@ -330,6 +387,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
+        wandb.log({"loss": loss.cpu().detach().numpy(),
+                   "train_acc1": acc1[0].cpu().detach().numpy(),
+                   "train_acc5": acc5[0].cpu().detach().numpy()})
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -354,14 +415,15 @@ def validate(val_loader, model, criterion, args):
 
     with torch.no_grad():
         end = time.time()
-        for i, (images, target) in enumerate(val_loader):
+        for i, (images, masks, target) in enumerate(val_loader):
             if args.gpu is not None:
                 images = images.cuda(args.gpu, non_blocking=True)
+                masks = masks.cuda(args.gpu, non_blocking=True)
             if torch.cuda.is_available():
                 target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            output = model(images)
+            output = model(images, masks)
             loss = criterion(output, target)
 
             # measure accuracy and record loss
@@ -380,6 +442,7 @@ def validate(val_loader, model, criterion, args):
         # TODO: this should also be done with the ProgressMeter
         print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
               .format(top1=top1, top5=top5))
+        wandb.log({"Val Acc@1": top1.avg, "Val Acc@5": top5.avg}, commit=False)
 
     return top1.avg
 

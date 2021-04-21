@@ -8,10 +8,12 @@ from typing import Optional, Any, List
 
 class HDTransformerEncoderLayer(Module):
 
-    def __init__(self, n_dims, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu"):
+    def __init__(self, n_dims, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu", max_window=4000000000, stride=20):
         super(HDTransformerEncoderLayer, self).__init__()
 
         self.layers = torch.nn.ModuleList([TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation) for _ in range(n_dims)])
+        self.max_window = max_window
+        self.stride = stride
 
     def forward(self, src: Tensor, src_mask: Optional[List[Tensor]] = None, src_key_padding_mask: Tensor = None) -> Tensor:
         r"""Pass the input through the encoder layer.
@@ -36,9 +38,35 @@ class HDTransformerEncoderLayer(Module):
             if src_key_padding_mask is not None:
                 keypmask = src_key_padding_mask.transpose(- 1, - 1 - i).reshape(-1, src_key_padding_mask.size(- 1 - i))
 
-            x = self.layers[i](reshaped_src.reshape(-1, src.size(-2 - i), src.size(-1)).transpose(0, 1), src_mask=msk, src_key_padding_mask=keypmask).transpose(0,1)
-            x = x.view(*reshaped_src.size())
-            src = x.transpose(-2, - 2 - i)
+
+            enc_in = reshaped_src.reshape(-1, src.size(- 2 - i), src.size(-1)).transpose(0, 1)
+            if enc_in.size(0) > self.max_window:
+                enc_in_unfolded = enc_in.unfold(0, self.max_window, self.stride).unsqueeze(0).transpose(0, -1).squeeze()
+                unfold_size = enc_in_unfolded.size()
+                if keypmask is not None:
+                    keypmask = keypmask.unfold(-1, self.max_window, self.stride).transpose(0, 1).reshape(-1, self.max_window)
+
+                x = self.layers[i](enc_in_unfolded.reshape(self.max_window, -1, enc_in_unfolded.size(-1)), src_mask=msk, src_key_padding_mask=keypmask)
+                x = x.reshape(unfold_size)
+
+                # Sum overlapping windows
+                x_big = torch.zeros([enc_in.size(0)] + [self.max_window // self.stride] + list(x.size())[2:], device=enc_in.device)
+                x_big_stacked = x_big.reshape([-1] + list(x_big.size())[2:])
+                indices = torch.tensor(sum([[(self.max_window // self.stride) * (i + self.stride * offset) + (offset % (self.max_window // self.stride)) for i in range(self.max_window)] for offset in range(x.size(1))], []), device=x_big_stacked.device)
+                x_big_stacked = x_big_stacked.index_add(0, indices, x.reshape([-1] + list(x.size())[2:]))
+                x_big = x_big_stacked.reshape(x_big.size())
+                x = x_big.sum(1).transpose(0, 1)
+
+                x = x.view(*reshaped_src.size())
+                src = x.transpose(-2, - 2 - i)
+            else:
+                # Eliminate nans
+                kpmsk = keypmask.clone()
+                kpmsk[keypmask.sum(-1) == keypmask.size(-1)] = False
+                x = self.layers[i](enc_in, src_mask=msk, src_key_padding_mask=kpmsk).transpose(0,1)
+                x = x * (~(keypmask.sum(-1) == keypmask.size(-1))).float().unsqueeze(-1).unsqueeze(-1)
+                x = x.view(*reshaped_src.size())
+                src = x.transpose(-2, - 2 - i)
 
         return src
 

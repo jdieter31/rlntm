@@ -2,9 +2,18 @@ import torch
 from torch import nn
 from .hdtransformer import HDTransformerEncoder, positionalencoding2d
 
+def get_n_params(model):
+    pp=0
+    for p in list(model.parameters()):
+        nn=1
+        for s in list(p.size()):
+            nn = nn*s
+        pp += nn
+    return pp
+
 class VisionTransformer(nn.Module):
 
-    def __init__(self, num_classes=1000, d_model=512, nhead=8, num_layers=4, dim_feedforward=2048, dropout=0, activation="relu", layer_norm_eps = 1e-5, chunk_size=16, normalize_dims=False, normal_dim=32):
+    def __init__(self, num_classes=1000, d_model=1024, nhead=16, num_layers=12, dim_feedforward=2048, dropout=0, activation="relu", layer_norm_eps = 1e-5, chunk_size=16, normalize_dims=False, normal_dim=32):
         super(VisionTransformer, self).__init__()
 
         self.d_model = d_model

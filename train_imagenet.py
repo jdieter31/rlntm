@@ -147,6 +147,7 @@ def main_worker(gpu, ngpus_per_node, args):
         print("=> creating model '{}'".format(args.arch))
         model = models.__dict__[args.arch]()
 
+
     if not torch.cuda.is_available():
         print('using CPU, this will be slow')
     elif args.distributed:
@@ -268,7 +269,8 @@ def main_worker(gpu, ngpus_per_node, args):
     train_dataset = datasets.ImageFolder(
         traindir,
         transforms.Compose([
-            transforms.RandomResizedCrop(224),
+            Resize(256),
+            #transforms.RandomResizedCrop(224),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize,
@@ -317,8 +319,9 @@ def main_worker(gpu, ngpus_per_node, args):
 
     val_loader = torch.utils.data.DataLoader(
         datasets.ImageFolder(valdir, transforms.Compose([
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
+            Resize(256),
+            #transforms.Resize(256),
+            #transforms.CenterCrop(224),
             transforms.ToTensor(),
             normalize,
         ])),

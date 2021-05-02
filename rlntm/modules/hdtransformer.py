@@ -54,14 +54,14 @@ class HDTransformerEncoderLayer(Module):
 
         src2 = src
         for i in range(len(self.self_attns)):
-            reshaped_src = src2.transpose(-2, - 2 - i)
+            reshaped_src = src.transpose(-2, - 2 - i)
             msk = src_mask[i]
             keypmask = None
             if src_key_padding_mask is not None:
                 keypmask = src_key_padding_mask.transpose(- 1, - 1 - i).reshape(-1, src_key_padding_mask.size(- 1 - i))
 
 
-            enc_in = reshaped_src.reshape(-1, src2.size(- 2 - i), src2.size(-1)).transpose(0, 1)
+            enc_in = reshaped_src.reshape(-1, src.size(- 2 - i), src.size(-1)).transpose(0, 1)
             if enc_in.size(0) > self.max_window:
                 enc_in_unfolded = enc_in.unfold(0, self.max_window, self.stride).unsqueeze(0).transpose(0, -1).squeeze()
                 unfold_size = enc_in_unfolded.size()
@@ -92,10 +92,9 @@ class HDTransformerEncoderLayer(Module):
                     x = self.self_attns[i](enc_in, enc_in, enc_in, attn_mask=msk, key_padding_mask=keypmask)[0].transpose(0,1)
 
                 x = x.view(*reshaped_src.size())
-                src2 = x.transpose(-2, - 2 - i)
+                src2 += self.dropout1(x.transpose(-2, - 2 - i))
 
-        src = src + self.dropout1(src2)
-        src = self.norm1(src)
+        src = self.norm1(src2)
         src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
         src = src + self.dropout2(src2)
         src = self.norm2(src)

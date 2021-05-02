@@ -13,7 +13,7 @@ def get_n_params(model):
 
 class VisionTransformer(nn.Module):
 
-    def __init__(self, num_classes=1000, d_model=1024, nhead=16, num_layers=8, dim_feedforward=4096, dropout=0, activation="relu", layer_norm_eps = 1e-5, chunk_size=16, normalize_dims=False, normal_dim=32):
+    def __init__(self, num_classes=1000, d_model=1024, nhead=16, num_layers=15, dim_feedforward=4096, dropout=0.1, activation="relu", layer_norm_eps = 1e-5, chunk_size=16, normalize_dims=False, normal_dim=32):
         super(VisionTransformer, self).__init__()
 
         self.d_model = d_model
@@ -27,6 +27,8 @@ class VisionTransformer(nn.Module):
         self.chunk_size = chunk_size
         self.embedder = nn.Linear(self.chunk_size * self.chunk_size * 3, d_model, bias=True)
         self.output_layer = nn.Linear(d_model, num_classes, bias=True)
+
+        #print(get_n_params(self))
 
     def _chunk_tensor(self, tensor):
         chunks1 = torch.stack(torch.split(tensor, self.chunk_size, -2), -3)

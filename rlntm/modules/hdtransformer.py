@@ -2,16 +2,37 @@ import torch
 import math
 import torch.nn as nn
 from torch import Tensor
-from torch.nn import Module, ModuleList, LayerNorm
+from torch.nn import Module, ModuleList, LayerNorm, Linear, Dropout, MultiheadAttention
 from torch.nn.modules.transformer import TransformerEncoderLayer
 from typing import Optional, Any, List
+import torch.nn.functional as F
+
+def _get_activation_fn(activation):
+    if activation == "relu":
+        return F.relu
+    elif activation == "gelu":
+        return F.gelu
+
+    raise RuntimeError("activation should be relu/gelu, not {}".format(activation))
 
 class HDTransformerEncoderLayer(Module):
 
     def __init__(self, n_dims, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu", max_window=4000000000, stride=20):
         super(HDTransformerEncoderLayer, self).__init__()
 
-        self.layers = torch.nn.ModuleList([TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation) for _ in range(n_dims)])
+        self.self_attns = torch.nn.ModuleList([MultiheadAttention(d_model, nhead, dropout=dropout) for _ in range(n_dims)])
+        # Implementation of Feedforward model
+        self.linear1 = Linear(d_model, dim_feedforward)
+        self.dropout = Dropout(dropout)
+        self.linear2 = Linear(dim_feedforward, d_model)
+
+        self.norm1 = LayerNorm(d_model)
+        self.norm2 = LayerNorm(d_model)
+        self.dropout1 = Dropout(dropout)
+        self.dropout2 = Dropout(dropout)
+
+        self.activation = _get_activation_fn(activation)
+
         self.max_window = max_window
         self.stride = stride
 
@@ -31,22 +52,23 @@ class HDTransformerEncoderLayer(Module):
         if src_mask is None:
             src_mask = [None for _ in range(len(list(src.size()[1:-1])))]
 
-        for i in range(len(self.layers)):
-            reshaped_src = src.transpose(-2, - 2 - i)
+        src2 = src
+        for i in range(len(self.self_attns)):
+            reshaped_src = src2.transpose(-2, - 2 - i)
             msk = src_mask[i]
             keypmask = None
             if src_key_padding_mask is not None:
                 keypmask = src_key_padding_mask.transpose(- 1, - 1 - i).reshape(-1, src_key_padding_mask.size(- 1 - i))
 
 
-            enc_in = reshaped_src.reshape(-1, src.size(- 2 - i), src.size(-1)).transpose(0, 1)
+            enc_in = reshaped_src.reshape(-1, src2.size(- 2 - i), src2.size(-1)).transpose(0, 1)
             if enc_in.size(0) > self.max_window:
                 enc_in_unfolded = enc_in.unfold(0, self.max_window, self.stride).unsqueeze(0).transpose(0, -1).squeeze()
                 unfold_size = enc_in_unfolded.size()
                 if keypmask is not None:
                     keypmask = keypmask.unfold(-1, self.max_window, self.stride).transpose(0, 1).reshape(-1, self.max_window)
 
-                x = self.layers[i](enc_in_unfolded.reshape(self.max_window, -1, enc_in_unfolded.size(-1)), src_mask=msk, src_key_padding_mask=keypmask)
+                x = self.self_attns[i](enc_in_unfolded.reshape(self.max_window, -1, enc_in_unfolded.size(-1)), attn_mask=msk, key_padding_mask=keypmask)
                 x = x.reshape(unfold_size)
 
                 # Sum overlapping windows
@@ -58,15 +80,25 @@ class HDTransformerEncoderLayer(Module):
                 x = x_big.sum(1).transpose(0, 1)
 
                 x = x.view(*reshaped_src.size())
-                src = x.transpose(-2, - 2 - i)
+                src2 = x.transpose(-2, - 2 - i)
             else:
                 # Eliminate nans
-                kpmsk = keypmask.clone()
-                kpmsk[keypmask.sum(-1) == keypmask.size(-1)] = False
-                x = self.layers[i](enc_in, src_mask=msk, src_key_padding_mask=kpmsk).transpose(0,1)
-                x = x * (~(keypmask.sum(-1) == keypmask.size(-1))).float().unsqueeze(-1).unsqueeze(-1)
+                if keypmask is not None:
+                    kpmsk = keypmask.clone()
+                    kpmsk[keypmask.sum(-1) == keypmask.size(-1)] = False
+                    x = self.self_attns[i](enc_in, enc_in, enc_in, attn_mask=msk, key_padding_mask=kpmsk)[0].transpose(0,1)
+                    x = x * (~(keypmask.sum(-1) == keypmask.size(-1))).float().unsqueeze(-1).unsqueeze(-1)
+                else:
+                    x = self.self_attns[i](enc_in, enc_in, enc_in, attn_mask=msk, key_padding_mask=keypmask)[0].transpose(0,1)
+
                 x = x.view(*reshaped_src.size())
-                src = x.transpose(-2, - 2 - i)
+                src2 = x.transpose(-2, - 2 - i)
+
+        src = src + self.dropout1(src2)
+        src = self.norm1(src)
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src = src + self.dropout2(src2)
+        src = self.norm2(src)
 
         return src
 
@@ -143,6 +175,35 @@ def positionalencoding2d(d_model, height, width):
     pe[1:d_model:2, :, :] = torch.cos(pos_w * div_term).transpose(0, 1).unsqueeze(1).repeat(1, height, 1)
     pe[d_model::2, :, :] = torch.sin(pos_h * div_term).transpose(0, 1).unsqueeze(2).repeat(1, 1, width)
     pe[d_model + 1::2, :, :] = torch.cos(pos_h * div_term).transpose(0, 1).unsqueeze(2).repeat(1, 1, width)
+
+    return pe
+
+def positionalencoding3d(d_model, height, width, depth):
+    """
+    :param d_model: dimension of the model
+    :param height: height of the positions
+    :param width: width of the positions
+    :return: d_model*height*width position matrix
+    """
+    """
+    if d_model % 4 != 0:
+        raise ValueError("Cannot use sin/cos positional encoding with "
+                         "odd dimension (got dim={:d})".format(d_model))
+    """
+    pe = torch.zeros(d_model, height, width, depth)
+    # Each dimension use half of d_model
+    d_model = int(d_model / 3)
+    div_term = torch.exp(torch.arange(0., d_model, 2) *
+                         -(math.log(10000.0) / d_model))
+    pos_w = torch.arange(0., width).unsqueeze(1)
+    pos_h = torch.arange(0., height).unsqueeze(1)
+    pos_z = torch.arange(0., depth).unsqueeze(1)
+    pe[0:d_model:2, :, :] = torch.sin(pos_w * div_term).transpose(0, 1).unsqueeze(1).unsqueeze(-1).repeat(1, height, 1, depth)
+    pe[1:d_model:2, :, :] = torch.cos(pos_w * div_term).transpose(0, 1).unsqueeze(1).unsqueeze(-1).repeat(1, height, 1, depth)
+    pe[d_model:2*d_model:2, :, :] = torch.sin(pos_h * div_term).transpose(0, 1).unsqueeze(2).unsqueeze(-1).repeat(1, 1, width, depth)
+    pe[d_model + 1:2*d_model:2, :, :] = torch.cos(pos_h * div_term).transpose(0, 1).unsqueeze(2).unsqueeze(-1).repeat(1, 1, width, depth)
+    pe[2*d_model:3*d_model:2, :, :] = torch.sin(pos_z * div_term).transpose(0, 1).unsqueeze(-2).unsqueeze(-2).repeat(1, height, width, 1)
+    pe[2*d_model + 1:3*d_model:2, :, :] = torch.cos(pos_z * div_term).transpose(0, 1).unsqueeze(-2).unsqueeze(-2).repeat(1, height, width, 1)
 
     return pe
 

@@ -46,10 +46,11 @@ class HAttnEncoderLayer(Module):
         self.convs = []
         size = list(input_size).copy()
         for i in range(int(math.log2(max(input_size)))):
+            stdv = 1 / math.sqrt((d_model // nhead) * (2 ** len(size)))
             self.convs.append(
                     convNd(d_model // nhead, d_model // nhead, len(size), 2, stride=tuple(2 for _ in range(len(size))),
-                        use_bias=True, padding=0, kernel_initializer=lambda x: torch.nn.init.normal_(x),
-                        bias_initializer=lambda x: torch.nn.init.normal_(x)))
+                        use_bias=True, padding=0, kernel_initializer=lambda x: torch.nn.init.uniform_(x, -stdv, stdv),
+                        bias_initializer=lambda x: torch.nn.init.uniform_(x, -stdv, stdv)))
             for j in reversed(range(len(size))):
                 size[j] = size[j] // 2
                 if size[j] == 1:

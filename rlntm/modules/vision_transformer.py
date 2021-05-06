@@ -14,7 +14,7 @@ def get_n_params(model):
 
 class VisionTransformer(nn.Module):
 
-    def __init__(self, num_classes=1000, d_model=512, nhead=8, num_layers=8, dim_feedforward=2048, dropout=0.1, activation="relu", layer_norm_eps = 1e-5, chunk_size=16, normalize_dims=False, normal_dim=32):
+    def __init__(self, num_classes=1000, d_model=512, nhead=16, num_layers=8, dim_feedforward=2048, dropout=0.1, activation="relu", layer_norm_eps = 1e-5, chunk_size=16, normalize_dims=False, normal_dim=32):
         super(VisionTransformer, self).__init__()
 
         self.d_model = d_model

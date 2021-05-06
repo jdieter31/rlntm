@@ -20,7 +20,8 @@ class HAttnEncoderLayer(Module):
 
     def __init__(self, input_size, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu"):
         super(HAttnEncoderLayer, self).__init__()
-
+        
+        self.nhead = nhead
         self.input_size = input_size
 
         self.attn = MultiheadAttention(d_model, nhead, dropout=dropout)
@@ -46,7 +47,7 @@ class HAttnEncoderLayer(Module):
         size = list(input_size).copy()
         for i in range(int(math.log2(max(input_size)))):
             self.convs.append(
-                    convNd(d_model, d_model, len(size), 2, stride=tuple(2 for _ in range(len(size))),
+                    convNd(d_model // nhead, d_model // nhead, len(size), 2, stride=tuple(2 for _ in range(len(size))),
                         use_bias=True, padding=0, kernel_initializer=lambda x: torch.nn.init.normal_(x),
                         bias_initializer=lambda x: torch.nn.init.normal_(x)))
             for j in reversed(range(len(size))):
@@ -72,8 +73,10 @@ class HAttnEncoderLayer(Module):
         out = src.permute(0, -1, *[k + 1 for k in range(len(src.size()) - 2)])
         hidden_vals = [out]
         for i in range(len(self.convs)):
+            out = out.reshape(-1, src.size(-1) // self.nhead, *out.size()[2:])
             out = self.convs[i](out)
             out = self.activation(out)
+            out = out.reshape(-1, src.size(-1), *out.size()[2:])
 
             out_exp = out
             for i in range(len(self.input_size)):

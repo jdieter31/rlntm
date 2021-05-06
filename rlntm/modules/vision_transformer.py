@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from .hdtransformer import HDTransformerEncoder, positionalencoding2d
+from .hattn import HAttnEncoder
 
 def get_n_params(model):
     pp=0
@@ -13,11 +14,11 @@ def get_n_params(model):
 
 class VisionTransformer(nn.Module):
 
-    def __init__(self, num_classes=1000, d_model=1024, nhead=16, num_layers=15, dim_feedforward=4096, dropout=0.1, activation="relu", layer_norm_eps = 1e-5, chunk_size=16, normalize_dims=False, normal_dim=32):
+    def __init__(self, num_classes=1000, d_model=256, nhead=8, num_layers=8, dim_feedforward=1024, dropout=0.1, activation="relu", layer_norm_eps = 1e-5, chunk_size=16, normalize_dims=False, normal_dim=32):
         super(VisionTransformer, self).__init__()
 
         self.d_model = d_model
-        self.hdtransformer = HDTransformerEncoder(2, d_model, nhead, num_layers, dim_feedforward, dropout, activation, layer_norm_eps)
+        self.hdtransformer = HAttnEncoder([16, 16], d_model, nhead, num_layers, dim_feedforward, dropout, activation, layer_norm_eps) #HDTransformerEncoder(2, d_model, nhead, num_layers, dim_feedforward, dropout, activation, layer_norm_eps)
         if normalize_dims:
             self.dim1normalizer = nn.MultiheadAttention(d_model, nhead, dropout, bias=True)
             self.dim2normalizer = nn.MultiheadAttention(d_model, nhead, dropout, bias=True)
@@ -27,6 +28,7 @@ class VisionTransformer(nn.Module):
         self.chunk_size = chunk_size
         self.embedder = nn.Linear(self.chunk_size * self.chunk_size * 3, d_model, bias=True)
         self.output_layer = nn.Linear(d_model, num_classes, bias=True)
+        print(get_n_params(self))
 
         #print(get_n_params(self))
 

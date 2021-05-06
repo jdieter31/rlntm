@@ -92,7 +92,7 @@ class HDTransformerEncoderLayer(Module):
                     x = self.self_attns[i](enc_in, enc_in, enc_in, attn_mask=msk, key_padding_mask=keypmask)[0].transpose(0,1)
 
                 x = x.view(*reshaped_src.size())
-                src2 += self.dropout1(x.transpose(-2, - 2 - i))
+                src2 = src2 + self.dropout1(x.transpose(-2, - 2 - i))
 
         src = self.norm1(src2)
         src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
@@ -191,7 +191,7 @@ def positionalencoding3d(d_model, height, width, depth):
     """
     pe = torch.zeros(d_model, height, width, depth)
     # Each dimension use half of d_model
-    d_model = int(d_model / 3)
+    d_model = 2 * int(d_model / 6)
     div_term = torch.exp(torch.arange(0., d_model, 2) *
                          -(math.log(10000.0) / d_model))
     pos_w = torch.arange(0., width).unsqueeze(1)

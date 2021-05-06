@@ -26,7 +26,7 @@ from stable_baselines3.common.vec_env.obs_dict_wrapper import ObsDictWrapper
 from .hdtransformer import HDTransformerEncoder, positionalencoding3d
 
 class ChessTransformerEncoder(BaseFeaturesExtractor):
-    def __init__(self, observation_space: gym.Space, features_dim: int = 512, nhead=16, num_layers=8, dim_feedforward=2048, dropout=0, activation="relu", layer_norm_eps = 1e-5):
+    def __init__(self, observation_space: gym.Space, features_dim: int = 256, nhead=4, num_layers=6, dim_feedforward=1024, dropout=0, activation="relu", layer_norm_eps = 1e-5):
         super(ChessTransformerEncoder, self).__init__(observation_space, features_dim)
 
         self.hdtransformer = HDTransformerEncoder(3, features_dim, nhead, num_layers, dim_feedforward, dropout, activation, layer_norm_eps)
@@ -40,6 +40,7 @@ class ChessTransformerEncoder(BaseFeaturesExtractor):
         pe = positionalencoding3d(self.features_dim, 8, 8, 8).to(model_in).transpose(0,1).transpose(1,2).transpose(2,3)
 
         features = self.hdtransformer(model_in + pe.unsqueeze(0)).mean(-2)
+
         return features
 
 
@@ -140,16 +141,64 @@ class ChessTransformerPolicy(ActorCriticPolicy):
         :param deterministic: Whether to sample or use deterministic actions
         :return: action, value and log probability of the action
         """
-        import ipdb; ipdb.set_trace()
         features = self.extract_features(obs[:, :, :, :-73])
+        move_mask = obs[:, :, :, -73:]
 
-        latent_pi, latent_vf, latent_sde = features, fea #self._get_latent(obs)
         # Evaluate the values for the given observations
-        values = self.value_net(latent_vf)
-        distribution = self._get_action_dist_from_latent(latent_pi, latent_sde=latent_sde)
-        actions = distribution.get_actions(deterministic=deterministic)
+        values = self.value_net(features).mean(-2).mean(-2)
+
+        # Get action probs and apply mask to ensure valid move is selected
+        action_probs = self.action_net(features).view(obs.size(0), -1)
+        action_probs = nn.functional.softmax(action_probs)
+        action_probs = action_probs * move_mask.reshape(obs.size(0), -1)
+        action_probs = action_probs / action_probs.sum(dim=-1, keepdim=True)
+
+        distribution = torch.distributions.Categorical(probs=action_probs)
+        if deterministic:
+           actions = torch.argmax(distribution.probs, dim=1)
+        else:
+            actions = distribution.sample()
+
         log_prob = distribution.log_prob(actions)
+
         return actions, values, log_prob
+
+    def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor):
+        features = self.extract_features(obs[:, :, :, :-73])
+        move_mask = obs[:, :, :, -73:]
+
+        # Evaluate the values for the given observations
+        values = self.value_net(features).mean(-2).mean(-2)
+
+        # Get action probs and apply mask to ensure valid move is selected
+        action_probs = self.action_net(features).view(obs.size(0), -1)
+        action_probs = nn.functional.softmax(action_probs)
+        action_probs = action_probs * move_mask.reshape(obs.size(0), -1)
+        action_probs = action_probs / action_probs.sum(dim=-1, keepdim=True)
+
+
+        distribution = torch.distributions.Categorical(probs=action_probs)
+        log_prob = distribution.log_prob(actions)
+
+        return values, log_prob, distribution.entropy()
+
+    def _predict(self, obs: torch.Tensor, deterministic: bool = False):
+        features = self.extract_features(obs[:, :, :, :-73])
+        move_mask = obs[:, :, :, -73:]
+
+        # Get action probs and apply mask to ensure valid move is selected
+        action_probs = self.action_net(features).view(obs.size(0), -1)
+        action_probs = nn.functional.softmax(action_probs)
+        action_probs = action_probs * move_mask.reshape(obs.size(0), -1)
+        action_probs = action_probs / action_probs.sum(dim=-1, keepdim=True)
+
+        distribution = torch.distributions.Categorical(probs=action_probs)
+        if deterministic:
+           actions = torch.argmax(distribution.probs, dim=1)
+        else:
+            actions = distribution.sample()
+
+        return actions
 
 
 

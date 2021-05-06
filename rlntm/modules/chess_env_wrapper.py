@@ -1,5 +1,5 @@
 import gym.spaces as spaces
-from gym import ObservationWrapper
+from gym import ObservationWrapper, Wrapper
 import numpy as np
 
 
@@ -17,7 +17,21 @@ class ChessObservationWrapper(ObservationWrapper):
 
     def observation(self, observation):
         legal_action_mask = np.zeros(8 * 8 * 73)
-        legal_action_mask[np.array(self.env.legal_actions)] = 1
+        try:
+            legal_action_mask[np.array(self.env.legal_actions)] = 1
+        except:
+            legal_action_mask = np.zeros(8 * 8 * 73)
+
         legal_action_mask = legal_action_mask.reshape(8, 8, 73)
         out = np.concatenate([observation, legal_action_mask], axis=2)
         return out
+
+class InfoWrapper(Wrapper):
+    def reset(self, **kwargs):
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+        observation, reward, done, info = self.env.step(action)
+        if info is None:
+            info = {}
+        return observation, reward, done, info

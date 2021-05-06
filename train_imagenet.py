@@ -23,6 +23,8 @@ from rlntm.modules.vision_transformer import VisionTransformer
 from collections.abc import Sequence
 import wandb
 import transformers
+from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from timm.data import create_transform
 
 wandb.init(project="trntm")
 
@@ -87,6 +89,38 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
 
 best_acc1 = 0
 
+def build_transform(is_train, input_size=256, color_jitter=0.4, aa='rand-m9-mstd0.5-inc1', train_interpolation='bicubic', reprob=0.25, remode='pixel', recount=1):
+    resize_im = input_size > 32
+    if is_train:
+        # this should always dispatch to transforms_imagenet_train
+        transform = create_transform(
+            input_size=input_size,
+            is_training=True,
+            color_jitter=color_jitter,
+            auto_augment=aa,
+            interpolation=train_interpolation,
+            re_prob=reprob,
+            re_mode=remode,
+            re_count=recount,
+        )
+        if not resize_im:
+            # replace RandomResizedCropAndInterpolation with
+            # RandomCrop
+            transform.transforms[0] = transforms.RandomCrop(
+                input_size, padding=4)
+        return transform
+
+    t = []
+    if resize_im:
+        size = int((256 / 224) * input_size)
+        t.append(
+            transforms.Resize(size, interpolation=3),  # to maintain same ratio w.r.t. 224 images
+        )
+        t.append(transforms.CenterCrop(input_size))
+
+    t.append(transforms.ToTensor())
+    t.append(transforms.Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD))
+    return transforms.Compose(t)
 
 def main():
     args = parser.parse_args()
@@ -267,13 +301,14 @@ def main_worker(gpu, ngpus_per_node, args):
 
     train_dataset = datasets.ImageFolder(
         traindir,
-        transforms.Compose([
-            #Resize(256),
-            transforms.RandomResizedCrop(224),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            normalize,
-        ]))
+        build_transform(True))
+        # transforms.Compose([
+        #     #Resize(256),
+        #     transforms.RandomResizedCrop(256),#(224),
+        #     transforms.RandomHorizontalFlip(),
+        #     transforms.ToTensor(),
+        #     normalize,
+        # ]))
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -317,13 +352,13 @@ def main_worker(gpu, ngpus_per_node, args):
         scheduler.load_state_dict(checkpoint['scheduler'])
 
     val_loader = torch.utils.data.DataLoader(
-        datasets.ImageFolder(valdir, transforms.Compose([
+        datasets.ImageFolder(valdir, build_transform(False)), #transforms.Compose([
             #Resize(256),
-            transforms.Resize(256),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            normalize,
-        ])),
+            #transforms.Resize(288),
+            #transforms.CenterCrop(256),
+            #transforms.ToTensor(),
+            #normalize,
+        #])),
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True, collate_fn=collate_fn)
 

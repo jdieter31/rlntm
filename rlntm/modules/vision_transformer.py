@@ -14,7 +14,7 @@ def get_n_params(model):
 
 class VisionTransformer(nn.Module):
 
-    def __init__(self, num_classes=1000, d_model=256, nhead=8, num_layers=8, dim_feedforward=1024, dropout=0.1, activation="relu", layer_norm_eps = 1e-5, chunk_size=16, normalize_dims=False, normal_dim=32):
+    def __init__(self, num_classes=1000, d_model=256, nhead=8, num_layers=9, dim_feedforward=1024, dropout=0.1, activation="relu", layer_norm_eps = 1e-5, chunk_size=16, normalize_dims=False, normal_dim=32):
         super(VisionTransformer, self).__init__()
 
         self.d_model = d_model
@@ -40,8 +40,8 @@ class VisionTransformer(nn.Module):
     def forward(self, images, masks):
         chunked_images = self._chunk_tensor(images)
         embeddings = self.embedder(chunked_images)
-        pos_encodings = positionalencoding2d(self.d_model, embeddings.size(-3), embeddings.size(-2))
-        model_in = pos_encodings.unsqueeze(-1).transpose(0, -1).expand_as(embeddings).to(embeddings) + embeddings
+        # pos_encodings = positionalencoding2d(self.d_model, embeddings.size(-3), embeddings.size(-2))
+        model_in = embeddings # pos_encodings.unsqueeze(-1).transpose(0, -1).expand_as(embeddings).to(embeddings) + embeddings
 
         if self.normalize_dims:
             normal_pos_encoding = positionalencoding2d(self.d_model, model_in.size(1), self.normal_dim)

@@ -19,7 +19,7 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import math
 import torchvision.models as models
-from rlntm.modules.vision_transformer import VisionTransformer
+from rlntm.modules.hattn import HAttnEncoder
 from collections.abc import Sequence
 import wandb
 import transformers
@@ -28,7 +28,7 @@ from timm.data import create_transform
 
 wandb.init(project="trntm")
 
-models.__dict__["vision_transformer"] = VisionTransformer
+models.__dict__["hierarchical_attention"] = HAttnEncoder
 
 model_names = sorted([name for name in models.__dict__
     if name.islower() and not name.startswith("__")
@@ -48,17 +48,17 @@ parser.add_argument('--epochs', default=90, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--warmup-steps', default=10000, type=int, metavar='N')
+parser.add_argument('--warmup-steps', default=1000, type=int, metavar='N')
 parser.add_argument('-b', '--batch-size', default=256, type=int,
                     metavar='N',
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
                          'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr', '--learning-rate', default=1e-4, type=float,
+parser.add_argument('--lr', '--learning-rate', default=5e-5, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
-parser.add_argument('--wd', '--weight-decay', default=5e-5, type=float,
+parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)',
                     dest='weight_decay')
 parser.add_argument('-p', '--print-freq', default=10, type=int,
@@ -89,7 +89,7 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
 
 best_acc1 = 0
 
-def build_transform(is_train, input_size=256, color_jitter=0.4, aa='rand-m9-mstd0.5-inc1', train_interpolation='bicubic', reprob=0.25, remode='pixel', recount=1):
+def build_transform(is_train, input_size=512, color_jitter=0.4, aa='rand-m9-mstd0.5-inc1', train_interpolation='bicubic', reprob=0.25, remode='pixel', recount=1):
     resize_im = input_size > 32
     if is_train:
         # this should always dispatch to transforms_imagenet_train
@@ -343,7 +343,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-        num_workers=args.workers, pin_memory=True, sampler=train_sampler, collate_fn=collate_fn)
+        num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
 
     scheduler = transformers.get_linear_schedule_with_warmup(optimizer, args.warmup_steps, len(train_loader) * args.epochs)
@@ -360,7 +360,7 @@ def main_worker(gpu, ngpus_per_node, args):
             #normalize,
         #])),
         batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True, collate_fn=collate_fn)
+        num_workers=args.workers, pin_memory=True)
 
     if args.evaluate:
         validate(val_loader, model, criterion, args)
@@ -408,7 +408,7 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, args):
     model.train()
 
     end = time.time()
-    for i, (images, masks, target) in enumerate(train_loader):
+    for i, (images, target) in enumerate(train_loader):
         # measure data loading time
         data_time.update(time.time() - end)
         if torch.cuda.is_available():
@@ -416,12 +416,11 @@ def train(train_loader, model, criterion, optimizer, scheduler, epoch, args):
 
         if args.gpu is not None:
             images = images.cuda(args.gpu, non_blocking=True)
-            masks = masks.cuda(args.gpu, non_blocking=True)
         if torch.cuda.is_available():
             target = target.cuda(args.gpu, non_blocking=True)
 
         # compute output
-        output = model(images, masks)
+        output = model(images)
         loss = criterion(output, target)
 
         # measure accuracy and record loss
@@ -463,15 +462,14 @@ def validate(val_loader, model, criterion, args):
 
     with torch.no_grad():
         end = time.time()
-        for i, (images, masks, target) in enumerate(val_loader):
+        for i, (images, target) in enumerate(val_loader):
             if args.gpu is not None:
                 images = images.cuda(args.gpu, non_blocking=True)
-                masks = masks.cuda(args.gpu, non_blocking=True)
             if torch.cuda.is_available():
                 target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
-            output = model(images, masks)
+            output = model(images)
             loss = criterion(output, target)
 
             # measure accuracy and record loss

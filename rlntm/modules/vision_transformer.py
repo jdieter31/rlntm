@@ -14,11 +14,11 @@ def get_n_params(model):
 
 class VisionTransformer(nn.Module):
 
-    def __init__(self, num_classes=1000, d_model=512, nhead=16, num_layers=8, dim_feedforward=2048, dropout=0.1, activation="relu", layer_norm_eps = 1e-5, chunk_size=16, normalize_dims=False, normal_dim=32):
+    def __init__(self, num_classes=1000, d_model=512, nhead=8, num_layers=6, dim_feedforward=2048, dropout=0.1, activation="relu", layer_norm_eps = 1e-5, chunk_size=1, normalize_dims=False, normal_dim=32):
         super(VisionTransformer, self).__init__()
 
         self.d_model = d_model
-        self.hdtransformer = HAttnEncoder([16, 16], d_model, nhead, num_layers, dim_feedforward, dropout, activation, layer_norm_eps) #HDTransformerEncoder(2, d_model, nhead, num_layers, dim_feedforward, dropout, activation, layer_norm_eps)
+        self.hdtransformer = HAttnEncoder([512, 512], d_model, nhead, 3, num_layers, dim_feedforward, dropout, activation, layer_norm_eps) #HDTransformerEncoder(2, d_model, nhead, num_layers, dim_feedforward, dropout, activation, layer_norm_eps)
         if normalize_dims:
             self.dim1normalizer = nn.MultiheadAttention(d_model, nhead, dropout, bias=True)
             self.dim2normalizer = nn.MultiheadAttention(d_model, nhead, dropout, bias=True)
@@ -38,10 +38,10 @@ class VisionTransformer(nn.Module):
         return chunks2.transpose(-2, -3).transpose(1, 2).transpose(2, 3).reshape(chunks2.size(0), chunks2.size(2), chunks2.size(4), -1)
 
     def forward(self, images, masks):
-        chunked_images = self._chunk_tensor(images)
-        embeddings = self.embedder(chunked_images)
+        #chunked_images = self._chunk_tensor(images)
+        #embeddings = self.embedder(chunked_images)
         # pos_encodings = positionalencoding2d(self.d_model, embeddings.size(-3), embeddings.size(-2))
-        model_in = embeddings # pos_encodings.unsqueeze(-1).transpose(0, -1).expand_as(embeddings).to(embeddings) + embeddings
+        model_in = images.transpose(1, -1)#embeddings # pos_encodings.unsqueeze(-1).transpose(0, -1).expand_as(embeddings).to(embeddings) + embeddings
 
         if self.normalize_dims:
             normal_pos_encoding = positionalencoding2d(self.d_model, model_in.size(1), self.normal_dim)
@@ -67,5 +67,5 @@ class VisionTransformer(nn.Module):
 
             model_in = normalized2
 
-        data = self.hdtransformer(model_in, src_key_padding_mask=masks)
-        return self.output_layer(data.sum(-2).sum(-2) / (~masks).sum(-1).sum(-1).unsqueeze(-1))
+        data = self.hdtransformer(model_in) #, src_key_padding_mask=masks)
+        return self.output_layer(data) #data.sum(-2).sum(-2) / (~masks).sum(-1).sum(-1).unsqueeze(-1))

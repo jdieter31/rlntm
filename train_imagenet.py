@@ -89,7 +89,7 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
 
 best_acc1 = 0
 
-def build_transform(is_train, input_size=512, color_jitter=0.4, aa='rand-m9-mstd0.5-inc1', train_interpolation='bicubic', reprob=0.25, remode='pixel', recount=1):
+def build_transform(is_train, input_size=256, color_jitter=0.4, aa='rand-m9-mstd0.5-inc1', train_interpolation='bicubic', reprob=0.25, remode='pixel', recount=1):
     resize_im = input_size > 32
     if is_train:
         # this should always dispatch to transforms_imagenet_train

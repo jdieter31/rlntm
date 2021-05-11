@@ -7,6 +7,7 @@ from torch.nn.modules.transformer import TransformerEncoderLayer
 from rlntm.modules.convNd import convNd
 from typing import Optional, Any, List
 import torch.nn.functional as F
+from .hdtransformer import positionalencoding2d
 
 def _get_activation_fn(activation):
     if activation == "relu":
@@ -174,7 +175,7 @@ class HAttnEncoder(Module):
 
     def __init__(self, input_size=[512, 512], d_model=512, nhead=8, input_dim=3, num_layers=6, dim_feedforward=2048,
             dropout=0.1, activation="relu", layer_norm_eps = 1e-5, kernel_size=2,
-            preprocessing_layers=5, output_head=True, output_size=1000):
+            preprocessing_layers=5, output_head=True, output_size=1000, pos_encodings=True):
         super(HAttnEncoder, self).__init__()
 
         if type(input_size) == int:
@@ -184,6 +185,8 @@ class HAttnEncoder(Module):
             assert kernel_size ** int(math.log2(size) / math.log2(kernel_size)) == size
 
         reduced_input_size = list(input_size).copy()
+        self.pos_encodings = pos_encodings
+        self.d_model = d_model
 
         for j in reversed(range(len(reduced_input_size))):
             reduced_input_size[j] = reduced_input_size[j] // (kernel_size ** preprocessing_layers)
@@ -215,9 +218,11 @@ class HAttnEncoder(Module):
             sliced = sliced.reshape(sliced.size(0), -1, *sliced.size()[3:])
             output[i] = sliced
 
+        if self.pos_encodings:
+            output[0] = output[0] + positionalencoding2d(self.d_model, output[0].size(-2), output[0].size(-1)).unsqueeze(0).to(output[0])
+
         for mod in self.layers:
             output = mod(output)
-
 
         if self.output_head:
             output = output[-1].reshape(output[-1].size(0), output[-1].size(1))
